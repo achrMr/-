@@ -1,0 +1,81 @@
+public class HibernateTransactionManager {
+	/*先创建HibernateTransactionObject,以设置Session及DataSource这些对象*/
+	protected Object doGetTransaction(){
+		HibernateTransactionObject txObject = new HibernateTransactionObject();
+		//是否允许嵌套事务，在这里设置
+		txObject.setSavepointAllowed(isNestedTransactionAllowed());
+		//从线程中取得SessionHolder,这个SessionHolder是在事务开始时与线程绑定的。
+		//把取得的SessionHolder设置到TransactionObject中去
+		SessionHolder sessionHolder = (SessionHolder) TransactionSynchronizationManager.
+				getResource(getSessionFactory());
+		if(sessionHolder != null){
+			if(logger.isDebugEnabled()){
+				logger.debug("Found thread-bound Session ["+ 
+						SessionFactoryUtils.toString(session)+"] for Spring-managed transaction");`
+			}
+			txObject.setSessionHolder(sessionHolder);
+		}
+		else if (this.hibernateManageSession){
+			try{
+				Session session = getSessionFactory().getCurrentSession();
+				if(logger.isDebugEnabled()){
+					logger.debug("Found Hibernate-managed Session ["+
+							SessionFactoryUtils.toString(session)+ "] for Spring-managed transaction");
+				}
+				txObject.setExistingSession(session);
+			}
+			catch (HibernateException ex){
+				throw new DataAccessResourceFailureException(
+						"Could not obtain Hibernate-managed Session for Spring-managed transaction", ex);
+			}
+		}
+		//在TransactionObject中设置DataSource,这个DataSource也是与线程绑定的
+		if(getDataSource() != null){
+			ConnectionHolder conHolder = (ConnectionHolder)TransactionSynchronizationManager.getResource(getDataSource());
+			txObject.setConnectionHolder(conHolder);
+		}
+		return txObject;
+	}
+	//Hibernate事务开始的实现
+	protected void doBegin(Object transaction,TransactionDefinition definition){
+		HibernateTransactionObject txObject = (HibernateTransactionObject)transaction;
+		if(txOject.hasConnectionHolder() &&!txObject.getConnectionHolder().isSynchronizedWithTransaction()){
+			throw new IllegalTransactionStateException(
+					"Pre-bound JDBC Connection found! HibernateTransactionManager does not support " +
+			"running within DataSourceTrasactionManager if told to manage the DataSource itself."+
+							"It is recommended to use a single HibernateTransactionManager for all transaction"+
+			"on a single DataSource,no matter whether Hibernate or JDBC access.");
+		}
+		Session session = null;
+		/*如果没有创建SessionHolder,那么这里创建Hibernate的session，并把创建的Session放到SessionHolder中去。*/
+		try{
+			if(txObject.getSessionHolder() == null || txObject.getSessionHolder().isSynchronizedWithTransaction()){
+				Interceptor entityInterceptor = getEntityInterceptor();
+				Session newSession = (entityInterceptor != null ?
+						getSessionFactory().openSession(entityInterceptor):
+						getSessionFactory().openSession());
+				if(logger.isDebugEnabled()){
+					logger.debug("Opened new Session ["+ SessionFactoryUtils.toString(newSession) +
+							"] for Hibernate transaction");
+				}
+				txObject.setSession(newSession);
+			}
+		}
+		catch(Exception ex){
+			if(txObject.isNewSession()){
+				try{
+					if (session.getTransaction().isActive()){
+						session.getTransaction().rollback();
+					}
+				}
+				catch(Throwable ex2){
+					logger.debug("Could not rollback Session after failed transaction begin",ex);
+				}
+				finally{
+					SessionFactoryUtils.colseSession(session);
+				}
+			}
+			throw new  CannotCreatTransactionException("Could not open Hibernate Sesion for transaction",ex);
+		}
+	}
+}
